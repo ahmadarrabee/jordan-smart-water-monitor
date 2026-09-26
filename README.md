@@ -4,67 +4,48 @@
 ![Target Cost: <27 JOD](https://img.shields.io/badge/Target%20Cost-%3C27%20JOD-green)
 ![MCU: ESP32](https://img.shields.io/badge/MCU-ESP32-red)
 
-An affordable water-monitoring system designed to help households, farms, and businesses understand their stored water supply and identify potential water loss between municipal delivery cycles.
+An ESP32 water monitor that measures tank levels and outlet flow, sends readings over MQTT, and saves failed transmissions locally. A Python script checks recorded data for unusual water use.
 
-## Overview and Motivation
+## Why I built this
 
-In Northern Jordan, municipal water is supplied intermittently, typically **1–2 times per week**. Households, farms, and businesses therefore depend on rooftop tanks and cisterns to store water between supply cycles. An undetected leak, a stuck float valve, or an overflowing tank can waste water that must last until the next delivery.
+In Northern Jordan, municipal water usually arrives once or twice a week. Households, farms, and businesses store it in tanks and cisterns until the next supply cycle. Hidden leaks, stuck float valves, and overflowing tanks can drain that reserve.
 
-Knowing how much water remains—and recognizing unusual consumption early—can help owners respond before a small fault becomes a serious shortage.
+I saw these problems at my uncle's commercial farms and gas station. My uncle, who is married to my dad's sister, had trouble tracking exact tank levels and finding hidden leaks across his sites. I designed this monitor to help him keep track of the stored water and spot problems earlier, with a target hardware cost below 27 JOD, or about $38 USD.
 
-### Origin Story
+I gave him the design, and he successfully deployed it at his farms and fuel station facilities. We plan to expand to other businesses and households with similar needs.
 
-I am **Ahmad Arrabee**, the inventor and designer of this project. The idea grew from observing water-management problems at commercial farms and a gas station owned by my uncle, my paternal aunt's husband. Across these facilities, it was difficult to track exact tank water levels and identify hidden leaks.
+This repository contains the firmware, sample data, analytics script, and installation notes.
 
-I designed an ultra-low-cost IoT edge node with a target hardware cost of **less than 27 JOD (approximately $38 USD)** to address these practical problems. By combining water-level sensing, flow measurement, and local data processing, the design aims to make water monitoring accessible to smaller businesses and households.
+## How it works
 
-### Deployment and Expansion
+The ESP32 reads two sensors:
 
-I provided the design to my uncle, who successfully deployed it across his agricultural farms and fuel-station facilities. Plans for further expansion include additional sites operated by other businesses and households facing similar water-storage challenges.
+- A **JSN-SR04T waterproof ultrasonic sensor** measures the distance to the water surface. The firmware uses the tank height and sensor mounting offset to calculate how full the tank is.
+- A **YF-S201 flow sensor** counts pulses as water passes through the outlet pipe. A calibration factor converts those pulses to liters per minute.
 
-This repository contains the ESP32 firmware, a Python analytics demonstration, sample telemetry, and installation notes. The implementation details and current limitations below describe the software included here.
+Readings are sent over Wi-Fi using MQTT. Failed transmissions go into a local SPIFFS log when storage is available. The Python analytics script runs separately on recorded data.
 
-## System Architecture and Features
+### Level readings
 
-The system combines two sensors with an ESP32 edge node. The node processes readings locally, publishes telemetry over Wi-Fi using MQTT, and stores failed transmissions locally when storage is available. A separate Python analytics pipeline examines recorded measurements for unusual patterns.
+Each measurement cycle takes 10 ultrasonic samples and calculates the median of the valid readings. This helps reduce sudden changes caused by water moving around during a refill.
 
-```text
-JSN-SR04T ultrasonic sensor ── Tank level ──┐
-                                          ├── ESP32 ── Wi-Fi / MQTT ── Telemetry
-YF-S201 inline flow sensor ─── Water flow ──┘      │
-                                                 └── SPIFFS local fallback log
+The firmware needs at least six valid samples. If it gets fewer, it marks the level as invalid. It also sets a high-level flag when the tank is above 95%. The outlet sensor cannot measure incoming water, so that flag does not confirm an overflow or a stuck inlet valve.
 
-Recorded telemetry ── CSV preparation ── Python Isolation Forest ── Anomaly flags
-```
+### Local storage
 
-### Dual-Sensor Array
+When a reading cannot be sent, the firmware writes it to a JSONL file on SPIFFS. The file has a 128 KiB limit. Once it is full, the firmware keeps the existing records and reports any new readings it cannot save over serial.
 
-- **JSN-SR04T waterproof ultrasonic sensor:** Measures the distance to the water surface without contacting the water. Calibrated tank dimensions and mounting offset convert distance into a tank-level percentage.
-- **YF-S201 inline pulse flow sensor:** Measures water flow using pulse counts and a calibrated conversion factor. The current installation notes place the meter on the tank outlet.
+Live MQTT publishing resumes when the connection returns. Automatic upload of saved records is still planned. The current code has no tool for retrieving or clearing the log.
 
-### Noise-Filtered Edge Firmware
+Readings include UTC timestamps after network time synchronization. Until then, the timestamp is null. Device uptime is also recorded.
 
-The ESP32 takes **10 ultrasonic samples per measurement cycle** and calculates the median of the valid readings. This filtering is intended to reduce false level drops caused by wave sloshing during municipal refills.
+### Checking for unusual water use
 
-At least six valid samples are required. If too few readings are usable, the firmware reports an invalid level instead of treating a sensor timeout as an empty tank. Filtering reduces transient noise; it does not guarantee the elimination of all measurement errors.
+The analytics script uses Isolation Forest with three inputs: tank level, flow rate, and whether the reading was taken at night. The aim is to help find slow, continuous leaks without flagging normal periods of heavy use.
 
-The firmware also reports a high-level flag above 95% capacity. Because the flow sensor measures outlet flow, this flag alone does not confirm an overflow or a stuck inlet valve.
+The current script fits and scores the supplied data with a 5% contamination setting. The sample shows how the analysis runs. Measuring leak-detection accuracy and false alarms still requires field data and testing.
 
-### Offline Resilience
-
-Failed network transmissions are automatically written to a **SPIFFS local JSONL log**, provided the filesystem is mounted and space is available. The log is bounded at **128 KiB**; once full, existing entries are preserved and new readings that cannot be stored are reported over serial.
-
-**Automatic synchronization of stored readings upon reconnection is a planned capability.** The current firmware resumes live MQTT publishing when connectivity returns, but does not replay the local log. Stored readings currently require a separate retrieval and clearing procedure.
-
-Timestamps use UTC after network time synchronization. Before synchronization, the timestamp is null and device uptime is included instead.
-
-### Machine Learning Anomaly Detection
-
-The Python **Isolation Forest** pipeline analyzes tank-level percentage, flow rate, and a nighttime indicator to identify unusual readings. The intended application is to flag patterns consistent with slow, continuous leaks while distinguishing them from legitimate high-use periods.
-
-The included pipeline fits and scores the supplied dataset with an assumed 5% contamination rate. It is an exploratory demonstration: reliable slow-leak detection and low false-alarm rates on high-use days still require representative field data, tuning, and validation. The repository does not establish a zero-false-alarm guarantee.
-
-## Bill of Materials (BOM)
+## Bill of materials
 
 | Component | Model / Specification | Quantity | Unit Cost (JOD) | Total Cost (JOD) |
 | :--- | :--- | :---: | ---: | ---: |
@@ -77,91 +58,85 @@ The included pipeline fits and scores the supplied dataset with an assumed 5% co
 | Cabling, glands, and headers | Installation components | 1 set | 4.50 | 4.50 |
 | **Total** | | | | **27.00 JOD (~$38 USD)** |
 
-The badge represents the **target of less than 27 JOD**; the listed BOM currently totals **exactly 27.00 JOD**. These are indicative project estimates, and actual sourcing and installation costs may vary. The battery-module entry is not a complete validated backup-power circuit; regulation, protection, and any required level shifting must be accounted for in the final installation.
+The target is below 27 JOD. The parts listed here currently add up to exactly 27 JOD, and prices may vary by supplier. The battery module alone is not a complete backup power supply. Regulation, protection, and any required level shifting may add to the installation cost.
 
-## Repository Structure
+## Setup
 
-```text
-.github/workflows/ci.yml             Firmware build and analytics checks
-firmware/platformio.ini             PlatformIO environment and dependencies
-firmware/src/main.cpp               ESP32 sensing, MQTT, and local logging
-analytics/anomaly_detector.py       Isolation Forest analytics pipeline
-analytics/requirements.txt          Pinned analytics dependencies
-analytics/test_anomaly_detector.py  Analytics regression tests
-analytics/data/sample_telemetry.csv Example input dataset
-hardware/enclosure/mounting_guide.md Installation and calibration notes
-LICENSE                             MIT License
-```
+### Firmware
 
-## Setup and Usage
-
-### Firmware Compilation with VS Code and PlatformIO
-
-1. Install **Visual Studio Code** and the **PlatformIO IDE** extension.
-2. Clone this repository and open the **`firmware/`** directory as the PlatformIO project.
-3. Update the Wi-Fi settings in **`firmware/src/main.cpp`**:
+1. Install Visual Studio Code and the PlatformIO IDE extension.
+2. Clone this repository and open `firmware/` as the PlatformIO project.
+3. Enter your Wi-Fi details in `firmware/src/main.cpp`:
 
    ```cpp
    const char* ssid = "YOUR_WIFI_SSID";
    const char* password = "YOUR_WIFI_PASSWORD";
    ```
 
-4. Set the MQTT broker and calibrate `TANK_HEIGHT_CM`, `SENSOR_FULL_DISTANCE_CM`, and `FLOW_K_FACTOR` for the actual installation. Keep the full water surface outside the ultrasonic sensor's specified blind zone.
-5. Connect the ESP32 by USB, select **Build**, and then **Upload** in PlatformIO.
-6. Open the serial monitor at **115200 baud** to inspect readings and connection or storage messages.
+4. Set the MQTT broker. Adjust `TANK_HEIGHT_CM`, `SENSOR_FULL_DISTANCE_CM`, and `FLOW_K_FACTOR` for your tank and sensors. Keep the full water surface outside the ultrasonic sensor's blind zone.
+5. Connect the ESP32 by USB. Click **Build**, then **Upload** in PlatformIO.
+6. Open the serial monitor at **115200 baud** to check readings and error messages.
 
-Read the [installation and calibration notes](hardware/enclosure/mounting_guide.md) before wiring and mounting the hardware. Provision the SPIFFS filesystem before relying on offline storage; the firmware deliberately avoids automatic formatting to protect existing logs.
+Follow the [mounting and calibration notes](hardware/enclosure/mounting_guide.md) before installing the hardware. Set up the SPIFFS filesystem before using local logging. The firmware does not format it automatically because doing so could erase saved readings.
 
-The supplied MQTT broker is public and unencrypted and is intended for demonstration. Configure appropriate broker authentication and encrypted transport before using private deployment data, and keep real Wi-Fi credentials out of commits.
+The default MQTT broker is public and the connection is unencrypted. Use authentication and encrypted transport for private deployment data. Do not commit real Wi-Fi credentials.
 
-### Running the Analytics Engine
+### Analytics
 
-Use **Python 3.12**. From the repository root, install the dependencies and run the sample analysis:
+Use Python 3.12. Run these commands from the repository root:
 
 ```bash
 pip install pandas numpy scikit-learn
 python analytics/anomaly_detector.py
 ```
 
-For the pinned dependency versions used by this project:
+To install the specific dependency versions used by the project, use this instead of the first command:
 
 ```bash
 python -m pip install -r analytics/requirements.txt
-python analytics/anomaly_detector.py
 ```
 
-To analyze another CSV file:
+The script uses `analytics/data/sample_telemetry.csv` by default. To supply your own file:
 
 ```bash
 python analytics/anomaly_detector.py path/to/telemetry.csv
 ```
 
-The CSV must contain these columns:
+The CSV needs these columns:
 
-| Column | Meaning |
+| Column | Value |
 | :--- | :--- |
 | `timestamp` | Date and time of the reading |
 | `tank_level_pct` | Tank level from 0 to 100 percent |
-| `flow_rate_lpm` | Nonnegative flow rate in liters per minute |
+| `flow_rate_lpm` | Flow rate in liters per minute, zero or greater |
 
-The script prints readings flagged as potential anomalies. Missing timestamps, invalid tank levels, and non-finite measurements are rejected. Firmware JSONL records must be converted to CSV before analysis; exclude records with invalid sensor measurements or unknown timestamps.
+The script prints the readings it flags as unusual. It rejects missing timestamps, out-of-range tank levels, and non-finite measurements. Convert firmware JSONL records to CSV before using them, leaving out readings with invalid levels or unknown timestamps.
 
-The nighttime feature covers **01:00–05:59 in the input timestamp's timezone**. Convert UTC telemetry to the intended local timezone before analysis when local nighttime behavior is relevant.
+The night indicator covers 01:00 through 05:59 in the input timestamp's timezone. Convert UTC readings to local time first if you want to analyze local nighttime use.
 
-### Validation
-
-Run the analytics regression tests from the repository root:
+### Tests
 
 ```bash
 python -m unittest discover -s analytics -p 'test_*.py'
 ```
 
-GitHub Actions also builds the ESP32 firmware and runs the analytics demonstration and tests. These checks verify software execution; sensor calibration and field performance require validation on the installed hardware.
+GitHub Actions builds the firmware and runs the analytics script and tests. Check sensor calibration and readings on the installed hardware as well.
 
-## Author and License
+## Files
 
-**Author:** Ahmad Arrabee
+| Path | Contents |
+| :--- | :--- |
+| `firmware/src/main.cpp` | Sensor readings, MQTT publishing, and local logging |
+| `firmware/platformio.ini` | ESP32 build configuration |
+| `analytics/anomaly_detector.py` | Isolation Forest analysis |
+| `analytics/data/sample_telemetry.csv` | Sample readings |
+| `analytics/requirements.txt` | Pinned Python dependencies |
+| `analytics/test_anomaly_detector.py` | Analytics tests |
+| `hardware/enclosure/mounting_guide.md` | Installation and calibration notes |
+| `.github/workflows/ci.yml` | Automated build and analytics checks |
 
-**License:** [MIT License](LICENSE)
+## Author and license
+
+Created by **Ahmad Arrabee**. Released under the [MIT License](LICENSE).
 
 Copyright © 2026 Ahmad Arrabee.
