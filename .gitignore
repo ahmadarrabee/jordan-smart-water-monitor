@@ -1,0 +1,12 @@
+.pio/
+.venv/
+.env
+.platformio/
+.vscode/
+.idea/
+*.pyc
+__pycache__/
+*.log
+.DS_Store
+firmware/.pio/
+analytics/__pycache__/
